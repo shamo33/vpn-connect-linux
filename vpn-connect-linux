@@ -53,7 +53,7 @@ HOST=
 # メトリック
 METRIC=50
 
-# sudo コマンドで昇格する場合、指定
+# sudo コマンドで昇格する場合、sudo を指定
 # root で実行する場合は空にしてもよい
 SUDO=sudo
 
