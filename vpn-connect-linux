@@ -1,0 +1,186 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+
+# vpn-connect-linux v2
+# Copyright (c) 2022 shamo33. All rights reserved.
+
+
+# ERROR: This script requires 〇〇 command.
+# 等コマンドのインストールを要求されたら、パッケージ名をググる等してインストールしてください
+
+
+##### 注意事項 #####
+# * 下層のネットワークは物理インターフェース (Wi-Fi, Ethernet など) を想定しています
+#   仮想インターフェース・その他特殊な環境では動作しない場合があります
+# * 接続終了時は必ず stop を実行してください
+# * 下層のネットワークの切り替わり・再接続が発生した場合バグるので再実行等してください
+# * 当 VPN の仕様決め打ちの設計のため、他の VPN では正しく動作しません
+###################
+
+
+##### BEGIN 環境固有の設定項目 #####
+
+# SoftEther VPN Client 内で作成した NIC 名
+NIC=vpn_shamo33
+
+# SoftEther VPN Client 内で作成したアカウント名
+ACCOUNT=shamo33
+
+# NetworkManager で使用する接続名
+# (既に存在する接続名を指定しないこと)
+NM_CONN=vpn_shamo33
+
+# SoftEther のインストール先
+VPNCLIENT=/opt/softether/bin/vpnclient
+VPNCMD=/opt/softether/bin/vpncmd
+
+# SoftEther VPN Client サービス名
+# .service 内で指定するラッパースクリプトとして使う場合は空にする
+VPNCLIENT_SERVICE=softether-vpnclient
+
+##### END 環境固有の設定項目 #####
+
+
+# LAN モード用スタティックルート
+# 書式: "IP[/ネットマスク] ネクストホップ"
+ROUTES=(
+)
+
+# 接続先ホスト名
+# SoftEther VPN Client 内で指定したものと同じホスト名を指定
+HOST=
+
+# メトリック
+METRIC=50
+
+# sudo コマンドで昇格する場合、指定
+# root で実行する場合は空にしてもよい
+SUDO=sudo
+
+
+# 必須コマンドの存在チェック
+REQUIRED_COMMANDS=(dig getopt ip jq nmcli sudo)
+for command in "${REQUIRED_COMMANDS[@]}"; do
+  which "$command" > /dev/null 2>&1 || {
+    echo "ERROR: This script requires $command command. Install $command first."
+    exit 1
+  }
+done
+
+
+try_loop() {
+  until eval "$@"; do
+    sleep 1
+  done
+}
+
+get_host_ip() {
+  dig +short "$HOST" a | tail -n1
+}
+
+restart_vpnclient() {
+  if [ "$VPNCLIENT_SERVICE" != "" ]; then
+    $SUDO systemctl restart "$VPNCLIENT_SERVICE"
+  else
+    $SUDO "$VPNCLIENT" stop
+    $SUDO "$VPNCLIENT" start
+  fi
+}
+
+stop_vpnclient() {
+  if [ "$VPNCLIENT_SERVICE" != "" ]; then
+    $SUDO systemctl stop "$VPNCLIENT_SERVICE"
+  else
+    $SUDO "$VPNCLIENT" stop
+  fi
+}
+
+start() {
+  local opts
+  opts=$(getopt --name "$(basename "$0")" --options i --longoptions internet -- "$@") || exit $?
+  eval set -- "$opts"
+
+  local internet=0
+  while true; do
+    local opt=$1
+    shift
+    case "$opt" in
+    -i|--internet)
+      internet=1
+    ;;
+    --)
+      break
+    ;;
+    *)
+      echo "Unknown option found: $opt"
+      exit 1
+    ;;
+    esac
+  done
+
+  restart_vpnclient
+
+  local host_ip=$(get_host_ip)
+  $SUDO ip route delete "$host_ip"
+
+  try_loop "$VPNCMD" -client localhost -cmd AccountConnect "$ACCOUNT"
+
+  local additional_params=()
+
+  if [ $internet -eq 0 ]; then
+    additional_params+=(ipv4.ignore-auto-routes yes)
+    local route
+    for route in "${ROUTES[@]}"; do
+      additional_params+=(+ipv4.routes "$route")
+    done
+
+  else
+    local underlying_route=$(ip -json route get "$host_ip" | jq -c .[0])
+    local underlying_route_gateway=$(echo "$underlying_route" | jq --exit-status -r .gateway)
+    local underlying_route_dev=$(echo "$underlying_route" | jq -r .dev)
+    local underlying_route_via
+    if [ $? -ne 0 ]; then
+      underlying_route_gateway=
+      underlying_route_via=
+    else
+      underlying_route_via=$(printf "via %q" "$underlying_route_gateway")
+    fi
+    $SUDO ip route add "$host_ip" $underlying_route_via dev "$underlying_route_dev" metric "$METRIC"
+  fi
+
+  nmcli connection delete "$NM_CONN"
+  nmcli connection add type tun \
+    ifname "$NIC" \
+    con-name "$NM_CONN" \
+    tun.mode tap \
+    ipv6.method disabled \
+    ipv4.route-metric "$METRIC" \
+    "${additional_params[@]}"
+
+  nmcli connection up "$NM_CONN"
+}
+
+stop() {
+  local host_ip=$(get_host_ip)
+
+  nmcli connection down "$NM_CONN"
+  nmcli connection delete "$NM_CONN"
+
+  stop_vpnclient
+
+  $SUDO ip route delete "$host_ip"
+}
+
+action=${1:-start}
+shift
+
+case "$action" in
+start|stop)
+  "$action" "$@"
+  exit $?
+;;
+*)
+  echo "Invalid action: $op"
+  exit 1
+;;
+esac
