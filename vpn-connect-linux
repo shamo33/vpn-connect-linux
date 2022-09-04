@@ -128,7 +128,7 @@ start() {
   local additional_params=()
 
   if [ $internet -eq 0 ]; then
-    additional_params+=(ipv4.ignore-auto-routes yes)
+    additional_params+=(ipv4.ignore-auto-routes yes ipv4.ignore-auto-dns yes)
     local route
     for route in "${ROUTES[@]}"; do
       additional_params+=(+ipv4.routes "$route")
