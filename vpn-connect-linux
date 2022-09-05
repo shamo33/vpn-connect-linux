@@ -136,9 +136,10 @@ start() {
 
   else
     local underlying_route=$(ip -json route get "$host_ip" | jq -c .[0])
-    local underlying_route_gateway=$(echo "$underlying_route" | jq --exit-status -r .gateway)
     local underlying_route_dev=$(echo "$underlying_route" | jq -r .dev)
     local underlying_route_via
+    local underlying_route_gateway
+    underlying_route_gateway=$(echo "$underlying_route" | jq --exit-status -r .gateway)
     if [ $? -ne 0 ]; then
       underlying_route_gateway=
       underlying_route_via=
